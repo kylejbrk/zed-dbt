@@ -1,55 +1,22 @@
-name: Release
+name: Release Zed Extension
 
 on:
   push:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-
 jobs:
-  release:
-    name: Validate and Release
+  homebrew:
+    name: Release Zed Extension
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Validate version consistency
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TAG="${GITHUB_REF_NAME#v}"
-
-          EXT_VERSION=$(grep -E '^version\s*=' extension.toml | head -n1 | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
-          CARGO_VERSION=$(grep -E '^version\s*=' Cargo.toml | head -n1 | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
-
-          echo "Tag version:    $TAG"
-          echo "Extension.toml: $EXT_VERSION"
-          echo "Cargo.toml:     $CARGO_VERSION"
-
-          test "$EXT_VERSION" = "$CARGO_VERSION"
-          test "$TAG" = "$EXT_VERSION"
-
-      - name: Build
-        run: cargo build --release --locked
-
-      - name: Run tests
-        run: cargo test --locked --all-targets
-        # If you don't have tests yet, you can remove this step.
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      # https://github.com/huacnlee/zed-extension-action
+      - uses: huacnlee/zed-extension-action@v2
         with:
-          generate_release_notes: true
-          draft: false
-          prerelease: false
+          extension-name: "dbt"
+          push-to: kylejbrk/extensions
+        env:
+          # the personal access token should have "repo" & "workflow" scopes
+          COMMITTER_TOKEN: ${{ secrets.ZED_DBT_RELEASE_TOKEN }}
