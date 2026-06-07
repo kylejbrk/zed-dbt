@@ -6,6 +6,14 @@ authors = ["kylejbrk"]
 description = "dbt language support for Zed, powered by dbt-language-server."
 repository = "https://github.com/kylejbrk/zed-dbt"
 
+[grammars.jinja2]
+repository = "https://github.com/ArcherHume/tree-sitter-jinja2"
+rev = "f5c7baa443b9d20746d2335230967234e01c934c"
+
+[grammars.sql]
+repository = "https://github.com/DerekStride/tree-sitter-sql"
+rev = "4a99c73f5384f2be10adc55208c84d95a7eb1137"
+
 [language_servers.dbt-language-server]
 name = "dbt Language Server"
 languages = ["SQL", "YAML"]
