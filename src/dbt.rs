@@ -1,6 +1,100 @@
+use std::collections::HashMap;
+
 use zed_extension_api::{self as zed, settings::LspSettings, LanguageServerId, Result};
 
 const LANGUAGE_SERVER_NAME: &str = "dbt-language-server";
+const MANUAL_BINARY_HINT: &str = "Install `dbt-language-server` on the worktree PATH or configure `lsp.dbt-language-server.binary.path`.";
+
+#[derive(Debug, PartialEq, Eq)]
+enum ConfiguredPathKind {
+    BareExecutable,
+    Absolute,
+    Relative,
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn is_windows_drive_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    has_windows_drive_prefix(path) && bytes.len() >= 3 && (bytes[2] == b'/' || bytes[2] == b'\\')
+}
+
+fn classify_configured_path(path: &str) -> Result<ConfiguredPathKind> {
+    if path.is_empty() {
+        return Err("configured dbt language server path must not be empty".to_string());
+    }
+
+    if has_windows_drive_prefix(path) && !is_windows_drive_absolute(path) {
+        return Err(format!(
+            "configured dbt language server path `{path}` is drive-relative; use an absolute path such as `C:\\path\\to\\dbt-language-server`"
+        ));
+    }
+
+    if path.starts_with('\\') && !path.starts_with("\\\\") {
+        return Err(format!(
+            "configured dbt language server path `{path}` is Windows root-relative; use a drive-qualified absolute path or UNC path"
+        ));
+    }
+
+    if path.starts_with('/') || path.starts_with("\\\\") || is_windows_drive_absolute(path) {
+        Ok(ConfiguredPathKind::Absolute)
+    } else if path.contains('/') || path.contains('\\') {
+        Ok(ConfiguredPathKind::Relative)
+    } else {
+        Ok(ConfiguredPathKind::BareExecutable)
+    }
+}
+
+fn join_worktree_path(root_path: &str, relative_path: &str) -> String {
+    let separator = if root_path.contains('\\') { '\\' } else { '/' };
+    let root_path = root_path.trim_end_matches(['/', '\\']);
+
+    if root_path.is_empty() {
+        format!("{separator}{relative_path}")
+    } else {
+        format!("{root_path}{separator}{relative_path}")
+    }
+}
+
+fn merge_environment(
+    mut environment: Vec<(String, String)>,
+    configured: Option<&HashMap<String, String>>,
+) -> Vec<(String, String)> {
+    if let Some(configured) = configured {
+        for (key, value) in configured {
+            environment.retain(|(existing_key, _)| existing_key != key);
+            environment.push((key.clone(), value.clone()));
+        }
+    }
+
+    environment
+}
+
+fn managed_asset_name(platform: zed::Os, arch: zed::Architecture) -> Result<&'static str> {
+    match (platform, arch) {
+        (zed::Os::Mac, zed::Architecture::Aarch64) => {
+            Ok("dbt-language-server-darwin-arm64")
+        }
+        (zed::Os::Mac, zed::Architecture::X8664) => {
+            Ok("dbt-language-server-darwin-amd64")
+        }
+        (zed::Os::Linux, zed::Architecture::X8664) => {
+            Ok("dbt-language-server-linux-amd64")
+        }
+        (zed::Os::Linux, zed::Architecture::Aarch64) => Err(format!(
+            "managed dbt-language-server downloads are not available for Linux arm64. {MANUAL_BINARY_HINT}"
+        )),
+        (zed::Os::Windows, _) => Err(format!(
+            "managed dbt-language-server downloads are not available for Windows. {MANUAL_BINARY_HINT}"
+        )),
+        (_, zed::Architecture::X86) => Err(format!(
+            "managed dbt-language-server downloads are not available for x86. {MANUAL_BINARY_HINT}"
+        )),
+    }
+}
 
 struct DbtExtension {
     cached_binary_path: Option<String>,
@@ -8,15 +102,17 @@ struct DbtExtension {
 
 impl DbtExtension {
     fn resolve_configured_binary_path(path: &str, worktree: &zed::Worktree) -> Result<String> {
-        if path.contains('/') || path.contains('\\') {
-            return Ok(path.to_string());
+        match classify_configured_path(path)? {
+            ConfiguredPathKind::BareExecutable => worktree.which(path).ok_or_else(|| {
+                format!(
+                    "configured dbt language server executable `{path}` was not found on the worktree PATH"
+                )
+            }),
+            ConfiguredPathKind::Absolute => Ok(path.to_string()),
+            ConfiguredPathKind::Relative => {
+                Ok(join_worktree_path(&worktree.root_path(), path))
+            }
         }
-
-        worktree.which(path).ok_or_else(|| {
-            format!(
-                "configured dbt language server executable `{path}` was not found on the worktree PATH"
-            )
-        })
     }
 
     fn language_server_binary_path(
@@ -36,6 +132,9 @@ impl DbtExtension {
             }
         }
 
+        let (platform, arch) = zed::current_platform();
+        let asset_name = managed_asset_name(platform, arch)?;
+
         zed::set_language_server_installation_status(
             language_server_id,
             &zed::LanguageServerInstallationStatus::CheckingForUpdate,
@@ -48,21 +147,6 @@ impl DbtExtension {
                 pre_release: false,
             },
         )?;
-
-        let (platform, arch) = zed::current_platform();
-        let asset_name = format!(
-            "dbt-language-server-{os}-{arch}",
-            os = match platform {
-                zed::Os::Mac => "darwin",
-                zed::Os::Linux => "linux",
-                zed::Os::Windows => "windows",
-            },
-            arch = match arch {
-                zed::Architecture::Aarch64 => "arm64",
-                zed::Architecture::X8664 => "amd64",
-                zed::Architecture::X86 => "amd64",
-            },
-        );
 
         let asset = release
             .assets
@@ -116,14 +200,10 @@ impl DbtExtension {
         let args = binary_settings
             .and_then(|binary| binary.arguments.clone())
             .unwrap_or_default();
-        let env = binary_settings
-            .and_then(|binary| binary.env.as_ref())
-            .map(|env| {
-                env.iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let env = merge_environment(
+            worktree.shell_env(),
+            binary_settings.and_then(|binary| binary.env.as_ref()),
+        );
 
         let command = if let Some(path) = binary_settings.and_then(|binary| binary.path.as_deref())
         {
@@ -184,3 +264,97 @@ impl zed::Extension for DbtExtension {
 }
 
 zed::register_extension!(DbtExtension);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_configured_paths_without_host_path_semantics() {
+        assert_eq!(
+            classify_configured_path("dbt-language-server").unwrap(),
+            ConfiguredPathKind::BareExecutable
+        );
+        assert_eq!(
+            classify_configured_path("./bin/dbt-language-server").unwrap(),
+            ConfiguredPathKind::Relative
+        );
+        assert_eq!(
+            classify_configured_path("/opt/dbt-language-server").unwrap(),
+            ConfiguredPathKind::Absolute
+        );
+        assert_eq!(
+            classify_configured_path(r"C:\tools\dbt-language-server").unwrap(),
+            ConfiguredPathKind::Absolute
+        );
+        assert_eq!(
+            classify_configured_path(r"\\server\tools\dbt-language-server").unwrap(),
+            ConfiguredPathKind::Absolute
+        );
+        assert!(classify_configured_path(r"C:tools\dbt-language-server").is_err());
+        assert!(classify_configured_path(r"\tools\dbt-language-server").is_err());
+    }
+
+    #[test]
+    fn resolves_relative_paths_against_posix_and_windows_worktree_roots() {
+        assert_eq!(
+            join_worktree_path("/workspace/project", "bin/dbt-language-server"),
+            "/workspace/project/bin/dbt-language-server"
+        );
+        assert_eq!(
+            join_worktree_path(r"C:\workspace\project", r"bin\dbt-language-server.exe"),
+            r"C:\workspace\project\bin\dbt-language-server.exe"
+        );
+    }
+
+    #[test]
+    fn merges_configured_environment_over_worktree_environment() {
+        let worktree_environment = vec![
+            ("PATH".to_string(), "/worktree/bin".to_string()),
+            ("HOME".to_string(), "/home/user".to_string()),
+        ];
+        let configured = HashMap::from([
+            ("PATH".to_string(), "/configured/bin".to_string()),
+            ("DBT_PROFILES_DIR".to_string(), "profiles".to_string()),
+        ]);
+
+        let environment = merge_environment(worktree_environment, Some(&configured));
+
+        assert!(environment.contains(&("PATH".to_string(), "/configured/bin".to_string())));
+        assert!(environment.contains(&("HOME".to_string(), "/home/user".to_string())));
+        assert!(environment.contains(&("DBT_PROFILES_DIR".to_string(), "profiles".to_string())));
+        assert_eq!(
+            environment.iter().filter(|(key, _)| key == "PATH").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn selects_only_published_managed_assets() {
+        assert_eq!(
+            managed_asset_name(zed::Os::Mac, zed::Architecture::Aarch64).unwrap(),
+            "dbt-language-server-darwin-arm64"
+        );
+        assert_eq!(
+            managed_asset_name(zed::Os::Mac, zed::Architecture::X8664).unwrap(),
+            "dbt-language-server-darwin-amd64"
+        );
+        assert_eq!(
+            managed_asset_name(zed::Os::Linux, zed::Architecture::X8664).unwrap(),
+            "dbt-language-server-linux-amd64"
+        );
+        assert!(
+            managed_asset_name(zed::Os::Linux, zed::Architecture::Aarch64)
+                .unwrap_err()
+                .contains("Linux arm64")
+        );
+        assert!(
+            managed_asset_name(zed::Os::Windows, zed::Architecture::X8664)
+                .unwrap_err()
+                .contains("Windows")
+        );
+        assert!(managed_asset_name(zed::Os::Mac, zed::Architecture::X86)
+            .unwrap_err()
+            .contains("x86"));
+    }
+}
