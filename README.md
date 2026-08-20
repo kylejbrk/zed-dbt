@@ -27,11 +27,44 @@ This extension attaches the dbt language server to **SQL** files. When you open 
 
 ## Configuration
 
-No additional configuration is needed for basic usage. The extension downloads and manages the language server binary automatically.
+No additional configuration is needed for basic usage. By default, the extension uses `dbt-language-server` from the worktree `PATH` when available, or downloads and manages the latest release otherwise.
+
+You can override the command in your Zed settings:
+
+```json
+{
+  "lsp": {
+    "dbt-language-server": {
+      "binary": {
+        "path": "/absolute/path/to/dbt-language-server",
+        "env": {
+          "DBT_PROFILES_DIR": "/absolute/path/to/profiles"
+        }
+      }
+    }
+  }
+}
+```
+
+A bare `binary.path`, such as `"dbt-language-server"`, is resolved from the worktree `PATH`. Paths containing a directory component are used directly. You can omit `path` and configure only `arguments` or `env`; the normal `PATH`-first, managed-download fallback will still be used.
+
+The extension also forwards `initialization_options` and `settings` from the `dbt-language-server` LSP configuration.
 
 ### dbt Fusion (optional)
 
-If you have [dbt Fusion](https://github.com/j-clemons/dbt-language-server#dbt-fusion-static-analysis) installed, you can enable static analysis diagnostics. Refer to the dbt-language-server documentation for details.
+The default remains the community language server without Fusion diagnostics. If you have [dbt Fusion](https://github.com/j-clemons/dbt-language-server#dbt-fusion-static-analysis) installed, enable its static analysis by adding `--fusion` while retaining automatic binary discovery:
+
+```json
+{
+  "lsp": {
+    "dbt-language-server": {
+      "binary": {
+        "arguments": ["--fusion"]
+      }
+    }
+  }
+}
+```
 
 ## License
 

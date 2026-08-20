@@ -1,17 +1,31 @@
-use zed_extension_api::{self as zed, LanguageServerId, Result};
+use zed_extension_api::{self as zed, settings::LspSettings, LanguageServerId, Result};
+
+const LANGUAGE_SERVER_NAME: &str = "dbt-language-server";
 
 struct DbtExtension {
     cached_binary_path: Option<String>,
 }
 
 impl DbtExtension {
+    fn resolve_configured_binary_path(path: &str, worktree: &zed::Worktree) -> Result<String> {
+        if path.contains('/') || path.contains('\\') {
+            return Ok(path.to_string());
+        }
+
+        worktree.which(path).ok_or_else(|| {
+            format!(
+                "configured dbt language server executable `{path}` was not found on the worktree PATH"
+            )
+        })
+    }
+
     fn language_server_binary_path(
         &mut self,
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<String> {
         // First, check if the user has it on their PATH already
-        if let Some(path) = worktree.which("dbt-language-server") {
+        if let Some(path) = worktree.which(LANGUAGE_SERVER_NAME) {
             return Ok(path);
         }
 
@@ -90,6 +104,36 @@ impl DbtExtension {
         self.cached_binary_path = Some(binary_path.clone());
         Ok(binary_path)
     }
+
+    fn make_language_server_command(
+        &mut self,
+        language_server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<zed::Command> {
+        let settings = LspSettings::for_worktree(LANGUAGE_SERVER_NAME, worktree)?;
+        let binary_settings = settings.binary.as_ref();
+
+        let args = binary_settings
+            .and_then(|binary| binary.arguments.clone())
+            .unwrap_or_default();
+        let env = binary_settings
+            .and_then(|binary| binary.env.as_ref())
+            .map(|env| {
+                env.iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let command = if let Some(path) = binary_settings.and_then(|binary| binary.path.as_deref())
+        {
+            Self::resolve_configured_binary_path(path, worktree)?
+        } else {
+            self.language_server_binary_path(language_server_id, worktree)?
+        };
+
+        Ok(zed::Command { command, args, env })
+    }
 }
 
 impl zed::Extension for DbtExtension {
@@ -104,13 +148,38 @@ impl zed::Extension for DbtExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let binary_path = self.language_server_binary_path(language_server_id, worktree)?;
+        match self.make_language_server_command(language_server_id, worktree) {
+            Ok(command) => {
+                zed::set_language_server_installation_status(
+                    language_server_id,
+                    &zed::LanguageServerInstallationStatus::None,
+                );
+                Ok(command)
+            }
+            Err(error) => {
+                zed::set_language_server_installation_status(
+                    language_server_id,
+                    &zed::LanguageServerInstallationStatus::Failed(error.clone()),
+                );
+                Err(error)
+            }
+        }
+    }
 
-        Ok(zed::Command {
-            command: binary_path,
-            args: vec![],
-            env: vec![],
-        })
+    fn language_server_initialization_options(
+        &mut self,
+        _language_server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<zed::serde_json::Value>> {
+        Ok(LspSettings::for_worktree(LANGUAGE_SERVER_NAME, worktree)?.initialization_options)
+    }
+
+    fn language_server_workspace_configuration(
+        &mut self,
+        _language_server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<zed::serde_json::Value>> {
+        Ok(LspSettings::for_worktree(LANGUAGE_SERVER_NAME, worktree)?.settings)
     }
 }
 
