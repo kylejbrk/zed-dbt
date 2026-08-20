@@ -48,9 +48,9 @@ You can override the command in your Zed settings:
 ```
 
 - A bare `binary.path`, such as `"dbt-language-server"`, is resolved from the worktree `PATH` and reports an error if it is absent.
-- POSIX absolute paths, Windows drive-qualified absolute paths, and Windows UNC paths are used unchanged.
-- Relative paths with directory components are resolved against the worktree root, not the extension directory. Windows drive-relative paths such as `C:tools\dbt-language-server` and root-relative paths such as `\tools\dbt-language-server` are rejected; use a drive-qualified or UNC absolute path instead.
-- The command inherits the worktree shell environment. Values in `binary.env` override matching inherited variables.
+- On macOS and Linux, absolute paths beginning with `/` are used unchanged. On Windows, drive-qualified paths and UNC paths beginning with `\\` or `//` are accepted; WASI-style paths such as `/C:/tools/dbt-language-server.exe` are normalized to `C:/tools/dbt-language-server.exe`.
+- Relative paths with directory components are resolved against the worktree root, not the extension directory. On Windows, drive-relative paths such as `C:tools\dbt-language-server` and root-relative paths such as `\tools\dbt-language-server` or `/tools/dbt-language-server` are rejected; use a drive-qualified or UNC absolute path instead.
+- The command inherits the worktree shell environment. Values in `binary.env` override matching inherited variables. Environment variable names are matched case-insensitively on Windows and case-sensitively on macOS and Linux; duplicate configured Windows case variants such as `Path` and `PATH` are rejected.
 - You can omit `path` and configure only `arguments` or `env`; the normal worktree-`PATH`-first, managed-download fallback will still be used.
 
 The extension also forwards `initialization_options` and `settings` from the `dbt-language-server` LSP configuration.

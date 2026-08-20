@@ -6,10 +6,10 @@ const LANGUAGE_SERVER_NAME: &str = "dbt-language-server";
 const MANUAL_BINARY_HINT: &str = "Install `dbt-language-server` on the worktree PATH or configure `lsp.dbt-language-server.binary.path`.";
 
 #[derive(Debug, PartialEq, Eq)]
-enum ConfiguredPathKind {
+enum ConfiguredPath {
     BareExecutable,
-    Absolute,
-    Relative,
+    Absolute(String),
+    Relative(String),
 }
 
 fn has_windows_drive_prefix(path: &str) -> bool {
@@ -22,29 +22,71 @@ fn is_windows_drive_absolute(path: &str) -> bool {
     has_windows_drive_prefix(path) && bytes.len() >= 3 && (bytes[2] == b'/' || bytes[2] == b'\\')
 }
 
-fn classify_configured_path(path: &str) -> Result<ConfiguredPathKind> {
+fn is_windows_unc_path(path: &str) -> bool {
+    let remainder = path
+        .strip_prefix("\\\\")
+        .or_else(|| path.strip_prefix("//"));
+    let Some(remainder) = remainder else {
+        return false;
+    };
+
+    remainder
+        .split(['/', '\\'])
+        .filter(|component| !component.is_empty())
+        .take(2)
+        .count()
+        == 2
+}
+
+fn classify_configured_path(path: &str, platform: zed::Os) -> Result<ConfiguredPath> {
     if path.is_empty() {
         return Err("configured dbt language server path must not be empty".to_string());
     }
 
-    if has_windows_drive_prefix(path) && !is_windows_drive_absolute(path) {
-        return Err(format!(
-            "configured dbt language server path `{path}` is drive-relative; use an absolute path such as `C:\\path\\to\\dbt-language-server`"
-        ));
-    }
+    if platform == zed::Os::Windows {
+        if let Some(normalized) = path.strip_prefix('/') {
+            if is_windows_drive_absolute(normalized) {
+                return Ok(ConfiguredPath::Absolute(normalized.to_string()));
+            }
+        }
 
-    if path.starts_with('\\') && !path.starts_with("\\\\") {
-        return Err(format!(
-            "configured dbt language server path `{path}` is Windows root-relative; use a drive-qualified absolute path or UNC path"
-        ));
-    }
+        if has_windows_drive_prefix(path) && !is_windows_drive_absolute(path) {
+            return Err(format!(
+                "configured dbt language server path `{path}` is drive-relative; use an absolute path such as `C:\\path\\to\\dbt-language-server`"
+            ));
+        }
 
-    if path.starts_with('/') || path.starts_with("\\\\") || is_windows_drive_absolute(path) {
-        Ok(ConfiguredPathKind::Absolute)
-    } else if path.contains('/') || path.contains('\\') {
-        Ok(ConfiguredPathKind::Relative)
+        if is_windows_drive_absolute(path) {
+            return Ok(ConfiguredPath::Absolute(path.to_string()));
+        }
+
+        if path.starts_with("\\\\") || path.starts_with("//") {
+            if is_windows_unc_path(path) {
+                return Ok(ConfiguredPath::Absolute(path.to_string()));
+            }
+
+            return Err(format!(
+                "configured dbt language server UNC path `{path}` must include both a server and share"
+            ));
+        }
+
+        if path.starts_with('/') || path.starts_with('\\') {
+            return Err(format!(
+                "configured dbt language server path `{path}` is Windows root-relative; use a drive-qualified absolute path or UNC path"
+            ));
+        }
+
+        if path.contains('/') || path.contains('\\') {
+            Ok(ConfiguredPath::Relative(path.to_string()))
+        } else {
+            Ok(ConfiguredPath::BareExecutable)
+        }
+    } else if path.starts_with('/') {
+        Ok(ConfiguredPath::Absolute(path.to_string()))
+    } else if path.contains('/') {
+        Ok(ConfiguredPath::Relative(path.to_string()))
     } else {
-        Ok(ConfiguredPathKind::BareExecutable)
+        Ok(ConfiguredPath::BareExecutable)
     }
 }
 
@@ -62,15 +104,40 @@ fn join_worktree_path(root_path: &str, relative_path: &str) -> String {
 fn merge_environment(
     mut environment: Vec<(String, String)>,
     configured: Option<&HashMap<String, String>>,
-) -> Vec<(String, String)> {
+    platform: zed::Os,
+) -> Result<Vec<(String, String)>> {
     if let Some(configured) = configured {
+        let mut configured = configured.iter().collect::<Vec<_>>();
+        configured.sort_by(|(left, _), (right, _)| {
+            left.to_ascii_lowercase()
+                .cmp(&right.to_ascii_lowercase())
+                .then_with(|| left.cmp(right))
+        });
+
+        if platform == zed::Os::Windows {
+            for entries in configured.windows(2) {
+                if entries[0].0.eq_ignore_ascii_case(entries[1].0) {
+                    return Err(format!(
+                        "configured dbt language server environment contains duplicate Windows variable names `{}` and `{}`; remove one case variant",
+                        entries[0].0, entries[1].0
+                    ));
+                }
+            }
+        }
+
         for (key, value) in configured {
-            environment.retain(|(existing_key, _)| existing_key != key);
+            environment.retain(|(existing_key, _)| {
+                if platform == zed::Os::Windows {
+                    !existing_key.eq_ignore_ascii_case(key)
+                } else {
+                    existing_key != key
+                }
+            });
             environment.push((key.clone(), value.clone()));
         }
     }
 
-    environment
+    Ok(environment)
 }
 
 fn managed_asset_name(platform: zed::Os, arch: zed::Architecture) -> Result<&'static str> {
@@ -102,15 +169,16 @@ struct DbtExtension {
 
 impl DbtExtension {
     fn resolve_configured_binary_path(path: &str, worktree: &zed::Worktree) -> Result<String> {
-        match classify_configured_path(path)? {
-            ConfiguredPathKind::BareExecutable => worktree.which(path).ok_or_else(|| {
+        let (platform, _) = zed::current_platform();
+        match classify_configured_path(path, platform)? {
+            ConfiguredPath::BareExecutable => worktree.which(path).ok_or_else(|| {
                 format!(
                     "configured dbt language server executable `{path}` was not found on the worktree PATH"
                 )
             }),
-            ConfiguredPathKind::Absolute => Ok(path.to_string()),
-            ConfiguredPathKind::Relative => {
-                Ok(join_worktree_path(&worktree.root_path(), path))
+            ConfiguredPath::Absolute(path) => Ok(path),
+            ConfiguredPath::Relative(path) => {
+                Ok(join_worktree_path(&worktree.root_path(), &path))
             }
         }
     }
@@ -200,10 +268,12 @@ impl DbtExtension {
         let args = binary_settings
             .and_then(|binary| binary.arguments.clone())
             .unwrap_or_default();
+        let (platform, _) = zed::current_platform();
         let env = merge_environment(
             worktree.shell_env(),
             binary_settings.and_then(|binary| binary.env.as_ref()),
-        );
+            platform,
+        )?;
 
         let command = if let Some(path) = binary_settings.and_then(|binary| binary.path.as_deref())
         {
@@ -270,29 +340,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_configured_paths_without_host_path_semantics() {
+    fn classifies_posix_configured_paths() {
         assert_eq!(
-            classify_configured_path("dbt-language-server").unwrap(),
-            ConfiguredPathKind::BareExecutable
+            classify_configured_path("dbt-language-server", zed::Os::Linux).unwrap(),
+            ConfiguredPath::BareExecutable
         );
         assert_eq!(
-            classify_configured_path("./bin/dbt-language-server").unwrap(),
-            ConfiguredPathKind::Relative
+            classify_configured_path("./bin/dbt-language-server", zed::Os::Mac).unwrap(),
+            ConfiguredPath::Relative("./bin/dbt-language-server".to_string())
         );
         assert_eq!(
-            classify_configured_path("/opt/dbt-language-server").unwrap(),
-            ConfiguredPathKind::Absolute
+            classify_configured_path("/opt/dbt-language-server", zed::Os::Linux).unwrap(),
+            ConfiguredPath::Absolute("/opt/dbt-language-server".to_string())
+        );
+    }
+
+    #[test]
+    fn classifies_and_normalizes_windows_configured_paths() {
+        assert_eq!(
+            classify_configured_path(r"C:\tools\dbt-language-server.exe", zed::Os::Windows)
+                .unwrap(),
+            ConfiguredPath::Absolute(r"C:\tools\dbt-language-server.exe".to_string())
         );
         assert_eq!(
-            classify_configured_path(r"C:\tools\dbt-language-server").unwrap(),
-            ConfiguredPathKind::Absolute
+            classify_configured_path("C:/tools/dbt-language-server.exe", zed::Os::Windows).unwrap(),
+            ConfiguredPath::Absolute("C:/tools/dbt-language-server.exe".to_string())
         );
         assert_eq!(
-            classify_configured_path(r"\\server\tools\dbt-language-server").unwrap(),
-            ConfiguredPathKind::Absolute
+            classify_configured_path(r"\\server\share\dbt-language-server.exe", zed::Os::Windows)
+                .unwrap(),
+            ConfiguredPath::Absolute(r"\\server\share\dbt-language-server.exe".to_string())
         );
-        assert!(classify_configured_path(r"C:tools\dbt-language-server").is_err());
-        assert!(classify_configured_path(r"\tools\dbt-language-server").is_err());
+        assert_eq!(
+            classify_configured_path("//server/share/dbt-language-server.exe", zed::Os::Windows)
+                .unwrap(),
+            ConfiguredPath::Absolute("//server/share/dbt-language-server.exe".to_string())
+        );
+        assert_eq!(
+            classify_configured_path("/C:/tools/dbt-language-server.exe", zed::Os::Windows)
+                .unwrap(),
+            ConfiguredPath::Absolute("C:/tools/dbt-language-server.exe".to_string())
+        );
+        assert!(
+            classify_configured_path(r"C:tools\dbt-language-server.exe", zed::Os::Windows).is_err()
+        );
+        assert!(
+            classify_configured_path(r"\tools\dbt-language-server.exe", zed::Os::Windows).is_err()
+        );
+        assert!(
+            classify_configured_path("/tools/dbt-language-server.exe", zed::Os::Windows).is_err()
+        );
     }
 
     #[test]
@@ -318,7 +415,8 @@ mod tests {
             ("DBT_PROFILES_DIR".to_string(), "profiles".to_string()),
         ]);
 
-        let environment = merge_environment(worktree_environment, Some(&configured));
+        let environment =
+            merge_environment(worktree_environment, Some(&configured), zed::Os::Linux).unwrap();
 
         assert!(environment.contains(&("PATH".to_string(), "/configured/bin".to_string())));
         assert!(environment.contains(&("HOME".to_string(), "/home/user".to_string())));
@@ -327,6 +425,44 @@ mod tests {
             environment.iter().filter(|(key, _)| key == "PATH").count(),
             1
         );
+    }
+
+    #[test]
+    fn merges_windows_environment_case_insensitively() {
+        let worktree_environment = vec![
+            ("Path".to_string(), r"C:\worktree\bin".to_string()),
+            ("HOME".to_string(), r"C:\Users\user".to_string()),
+        ];
+        let configured = HashMap::from([("PATH".to_string(), r"C:\configured\bin".to_string())]);
+
+        let environment =
+            merge_environment(worktree_environment, Some(&configured), zed::Os::Windows).unwrap();
+
+        assert_eq!(
+            environment
+                .iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+                .collect::<Vec<_>>(),
+            vec![&("PATH".to_string(), r"C:\configured\bin".to_string())]
+        );
+        assert!(environment.contains(&("HOME".to_string(), r"C:\Users\user".to_string())));
+    }
+
+    #[test]
+    fn rejects_duplicate_configured_windows_environment_names() {
+        let configured = HashMap::from([
+            ("Path".to_string(), r"C:\first".to_string()),
+            ("PATH".to_string(), r"C:\second".to_string()),
+        ]);
+
+        let error = merge_environment(Vec::new(), Some(&configured), zed::Os::Windows).unwrap_err();
+
+        assert!(error.contains("duplicate Windows variable names"));
+        assert!(error.contains("PATH"));
+        assert!(error.contains("Path"));
+
+        let environment = merge_environment(Vec::new(), Some(&configured), zed::Os::Linux).unwrap();
+        assert_eq!(environment.len(), 2);
     }
 
     #[test]
