@@ -1,7 +1,7 @@
 id = "dbt"
 name = "dbt"
 schema_version = 1
-version = "0.1.2"
+version = "0.1.3"
 authors = ["kylejbrk"]
 description = "dbt language support for Zed, powered by dbt-language-server."
 repository = "https://github.com/kylejbrk/zed-dbt"

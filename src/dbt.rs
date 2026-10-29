@@ -195,11 +195,15 @@ impl DbtExtension {
 
         // If we've already downloaded it, return the cached path
         if let Some(path) = &self.cached_binary_path {
-            if std::fs::metadata(path).map_or(false, |m| m.is_file()) {
+            if std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
                 return Ok(path.clone());
             }
         }
 
+        self.download_or_update(language_server_id)
+    }
+
+    fn download_or_update(&mut self, language_server_id: &LanguageServerId) -> Result<String> {
         let (platform, arch) = zed::current_platform();
         let asset_name = managed_asset_name(platform, arch)?;
 
@@ -237,7 +241,7 @@ impl DbtExtension {
         // parent directories automatically).
         let binary_path = format!("dbt-language-server-{}", release.version);
 
-        if !std::fs::metadata(&binary_path).map_or(false, |m| m.is_file()) {
+        if !std::fs::metadata(&binary_path).is_ok_and(|m| m.is_file()) {
             zed::set_language_server_installation_status(
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Downloading,
@@ -251,10 +255,24 @@ impl DbtExtension {
             .map_err(|e| format!("failed to download file: {e}"))?;
 
             zed::make_file_executable(&binary_path)?;
+
+            self.remove_stale_binaries(&binary_path);
         }
 
         self.cached_binary_path = Some(binary_path.clone());
         Ok(binary_path)
+    }
+
+    fn remove_stale_binaries(&self, current_binary: &str) {
+        if let Ok(entries) = std::fs::read_dir(".") {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.starts_with("dbt-language-server-") && name != current_binary {
+                        let _ = std::fs::remove_file(name);
+                    }
+                }
+            }
+        }
     }
 
     fn make_language_server_command(
