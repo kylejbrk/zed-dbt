@@ -1,11 +1,16 @@
 id = "dbt"
 name = "dbt"
 schema_version = 1
-version = "0.1.2"
+version = "0.2.0"
 authors = ["kylejbrk"]
-description = "dbt language support for Zed, powered by dbt-language-server."
+description = "dbt language support for Zed, powered by the official dbt lsp."
 repository = "https://github.com/kylejbrk/zed-dbt"
 
 [language_servers.dbt-language-server]
 name = "dbt Language Server"
-languages = ["SQL", "YAML"]
+languages = ["SQL", "YAML", "Markdown"]
+
+[language_servers.dbt-language-server.language_ids]
+SQL = "sql"
+YAML = "yaml"
+Markdown = "markdown"
