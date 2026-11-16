@@ -3,14 +3,19 @@ name = "dbt"
 schema_version = 1
 version = "0.2.0"
 authors = ["kylejbrk"]
-description = "dbt language support for Zed, powered by the official dbt lsp."
+description = "dbt language support for Zed, with dbt-language-server and opt-in official dbt lsp support."
 repository = "https://github.com/kylejbrk/zed-dbt"
 
 [language_servers.dbt-language-server]
 name = "dbt Language Server"
-languages = ["SQL", "YAML", "Markdown"]
+languages = ["SQL", "YAML"]
 
-[language_servers.dbt-language-server.language_ids]
+[language_servers.dbt-lsp]
+name = "Official dbt Language Server"
+languages = ["SQL", "YAML", "Markdown"]
+opt_in_languages = ["SQL", "YAML", "Markdown"]
+
+[language_servers.dbt-lsp.language_ids]
 SQL = "sql"
 YAML = "yaml"
 Markdown = "markdown"

@@ -1,19 +1,68 @@
 # zed-dbt
 
-dbt language support for [Zed](https://zed.dev), powered by the official
-`dbt lsp` language server that ships inside the
-[dbt CLI](https://docs.getdbt.com/docs/fusion/install-fusion-cli) as of dbt v2.
+dbt language support for [Zed](https://zed.dev), powered by
+[dbt-language-server](https://github.com/j-clemons/dbt-language-server) by
+default, with opt-in support for the official `dbt lsp` server.
 
-> **Upgrading from 0.1.x?** This version talks to the official `dbt lsp` server
-> instead of downloading a standalone `dbt-language-server` binary. You now need
-> dbt v2 or later on your `PATH` — see [Requirements](#requirements). The
-> language server ID is unchanged (`dbt-language-server`), so existing
-> `lsp` and `language_servers` settings keep working.
+## Installation and default server
 
-## Features
+Install this extension from the Zed extension marketplace by searching for
+**dbt**. Open a dbt project containing `dbt_project.yml` as your Zed worktree.
 
-The extension is deliberately thin: Zed owns the editor UX and `dbt lsp` owns
-all language intelligence. The server provides:
+The existing Go server, `dbt-language-server`, remains the default for **SQL**
+and **YAML**. The extension uses it from your worktree `PATH` when available;
+otherwise it downloads the latest release and caches it automatically.
+Existing users do not need dbt v2 or any settings changes.
+
+The default server provides completion, hover information, go to definition,
+and go to schema. For optional Fusion diagnostics, see the
+[dbt-language-server documentation](https://github.com/j-clemons/dbt-language-server#dbt-fusion-static-analysis).
+
+## Opting into the official dbt server
+
+The official server has a separate ID, **`dbt-lsp`**, and is disabled by default
+for **SQL**, **YAML**, and **Markdown** using Zed's
+[`opt_in_languages`](https://zed.dev/docs/extensions/languages#opt-in-language-servers)
+manifest setting. It requires [dbt v2 or later](https://docs.getdbt.com/docs/fusion/install-fusion-cli)
+and a project compatible with that version. dbt Core v1 does not include
+`dbt lsp`.
+
+Use a Zed version that supports `opt_in_languages`. Older versions ignore this
+manifest setting and may start both servers; update Zed, or explicitly exclude
+`!dbt-lsp` in each language's `language_servers` list to keep using the default.
+
+To select the official server, add this to your project's `.zed/settings.json`:
+
+```json
+{
+  "languages": {
+    "SQL": { "language_servers": ["dbt-lsp", "!dbt-language-server", "..."] },
+    "YAML": { "language_servers": ["dbt-lsp", "!dbt-language-server", "..."] },
+    "Markdown": { "language_servers": ["dbt-lsp", "..."] }
+  },
+  "lsp": {
+    "dbt-lsp": {
+      "binary": {
+        "path": "/absolute/path/to/dbt"
+      }
+    }
+  }
+}
+```
+
+`binary.path` is optional when dbt v2 is available as `dbt` on the worktree
+`PATH`. The extension launches it as `dbt lsp`; no official server binary is
+downloaded. Server selection is per language, so you can opt in only for the
+languages you need. The example disables the Go server to avoid duplicate
+results while preserving other servers through `"..."`.
+
+Profiles and credentials come from the worktree shell environment and normal
+dbt configuration locations. The extension sets `DBT_LSP_USE_TARGET_LSP=1` for
+the official server to keep background compile artifacts in `target/.lsp`.
+
+### Official server features
+
+The official `dbt lsp` server provides:
 
 - **Diagnostics** — compiler and linter feedback from dbt's static analysis
 - **Code Completion** — refs, sources, seeds, macros, variables, and functions
@@ -24,49 +73,16 @@ all language intelligence. The server provides:
 - **Code Lens** and **Semantic Tokens**
 - **Formatting** and **Code Actions** (fix-all and lint-only fixes)
 
-## Requirements
+### Official server settings
 
-- [Zed](https://zed.dev) editor
-- [dbt v2 or later](https://docs.getdbt.com/docs/fusion/install-fusion-cli),
-  available as `dbt` on your `PATH`. The `dbt lsp` subcommand does not exist in
-  dbt v1 / `dbt-core`, so this extension requires v2.
-- A dbt project with a `dbt_project.yml` at the root, opened as the Zed worktree
-
-## Installation
-
-Install this extension from the Zed extension marketplace by searching for
-**dbt**.
-
-The extension finds `dbt` on the worktree `PATH` and launches it as `dbt lsp`.
-Unlike 0.1.x, no language server binary is downloaded — the server is part of
-the dbt CLI you already have installed.
-
-## How It Works
-
-The language server attaches to **SQL**, **YAML**, and **Markdown** files. When
-you open one inside a dbt project, the server activates and provides
-intelligence for dbt constructs such as `{{ ref('...') }}`,
-`{{ source('...', '...') }}`, and macros.
-
-Open the dbt project directory as the Zed worktree. The server discovers the
-project from Zed's workspace during initialization; when Zed supplies a file
-path as the workspace root, the server walks upward to the nearest
-`dbt_project.yml`. Profiles and credentials come from the worktree shell
-environment and the normal dbt configuration locations.
-
-The extension sets `DBT_LSP_USE_TARGET_LSP=1`, which keeps the server's compile
-artifacts in `target/.lsp` so background analysis never clobbers the output of a
-`dbt run` in the same project.
-
-## Configuration
-
-No configuration is required. The linter and formatter are **disabled by
-default** and are opted into through Zed's project settings:
+Settings for the two servers are independent. Keep existing Go server settings
+under `lsp.dbt-language-server`; configure the official server under
+`lsp.dbt-lsp`. The official linter and formatter are disabled by default:
 
 ```json
 {
   "lsp": {
-    "dbt-language-server": {
+    "dbt-lsp": {
       "settings": {
         "lsp": {
           "maxErrorReporting": 100,
@@ -95,7 +111,7 @@ Supported `dbt.lsp` keys:
 | `linter.enabled`     | `false` | Enable linter diagnostics                       |
 | `formatter.enabled`  | `false` | Enable the formatter                            |
 
-### Enabling formatting and code lenses
+### Official server formatting and code lenses
 
 To format on save, point the language to the server as its formatter:
 
@@ -123,7 +139,7 @@ Set `binary.path` to launch a particular `dbt`:
 ```json
 {
   "lsp": {
-    "dbt-language-server": {
+    "dbt-lsp": {
       "binary": {
         "path": "/absolute/path/to/dbt",
         "arguments": ["lsp"]
