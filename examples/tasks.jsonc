@@ -1,0 +1,87 @@
+// Example Zed tasks for dbt projects. Copy this file to `<project>/.zed/tasks.json`
+// (or to `~/.config/zed/tasks.json` to use it in every project), then run `task: spawn`.
+//
+// They run `dbt` from your PATH. To use another binary, replace `dbt` in the commands below.
+// Zed runs them from the worktree root, which must contain dbt_project.yml.
+// "open compiled file from target/" runs `zed --add`, so it needs the `zed` command (Zed > Install CLI).
+// Work with dbt v1 and v2: model lineage, compile, open compiled file, preview, run/test/build.
+// (On v1 the preview shows at most six columns, and compile prints the SQL twice.)
+// Needs dbt v2 (fails on v1): format.
+// run, test, build and the preview (`dbt show`) run queries on your warehouse.
+[
+  {
+    "label": "dbt: lineage of current model (up + down)",
+    "command": "echo \"## Upstream of $ZED_STEM\"; dbt ls -q --select \"+$ZED_STEM\" --exclude \"$ZED_STEM\" --resource-type model seed snapshot source exposure --output path | grep . || echo \"  (none)\"; echo; echo \"## Downstream of $ZED_STEM\"; dbt ls -q --select \"$ZED_STEM+\" --exclude \"$ZED_STEM\" --resource-type model seed snapshot source exposure --output path | grep . || echo \"  (none)\"",
+    "reveal": "always",
+    "use_new_terminal": false,
+    "show_command": false
+  },
+  {
+    "label": "dbt: format current file",
+    "command": "dbt format -q \"$ZED_RELATIVE_FILE\"",
+    "reveal": "no_focus",
+    "use_new_terminal": false,
+    "hide": "on_success",
+    "show_command": false
+  },
+  {
+    "label": "dbt: format project",
+    "command": "dbt format",
+    "reveal": "always",
+    "use_new_terminal": false,
+    "hide": "on_success",
+    "show_command": false
+  },
+  {
+    "label": "dbt: compile current model and print SQL",
+    "command": "dbt compile -s \"$ZED_STEM\" -q && find target/compiled -name \"$ZED_STEM.sql\" -exec cat {} +",
+    "reveal": "always",
+    "use_new_terminal": false,
+    "show_command": false
+  },
+  {
+    "label": "dbt: open compiled file from target/",
+    "command": "sh -c 'f=$(find target/.lsp/compiled target/compiled -name \"$1.sql\" -exec ls -t {} + 2>/dev/null | head -1); if [ -n \"$f\" ]; then zed --add \"$f\"; else echo \"No compiled SQL for $1 yet. Run dbt compile first.\"; fi' sh \"$ZED_STEM\"",
+    "reveal": "no_focus",
+    "use_new_terminal": false,
+    "hide": "on_success",
+    "show_command": false
+  },
+  {
+    "label": "dbt: run current model (executes on the warehouse)",
+    "command": "dbt run -s \"$ZED_STEM\"",
+    "reveal": "always",
+    "use_new_terminal": false,
+    "show_command": false
+  },
+  {
+    "label": "dbt: test current model",
+    "command": "dbt test -s \"$ZED_STEM\"",
+    "reveal": "always",
+    "use_new_terminal": false,
+    "show_command": false
+  },
+  {
+    "label": "dbt: build current model (run + test)",
+    "command": "dbt build -s \"$ZED_STEM\"",
+    "reveal": "always",
+    "use_new_terminal": false,
+    "show_command": false
+  },
+  // Preview: `dbt show` piped into `less`, so the rows aren't kept in the terminal's scrollback.
+  //  - `2>&1 </dev/null`: dbt hides columns that don't fit when stderr or stdin is a terminal. With
+  //    a pipe it prints them all, and `less -S` scrolls sideways.
+  //  - The `--lesskey-content` keys map `l` and `h` to sideways scrolling (the arrow keys don't reach
+  //    `less` in Zed's terminal) and disable `!`, `|`, `s` and `v` (shell, pipe, save, editor). Needs a
+  //    `less` that has `--lesskey-content`; tested with less 668.
+  //  - The pipeline's exit status is `less`'s: a failing `dbt show` prints its error in the pager, but Zed
+  //    still reports the task as successful.
+  {
+    "label": "dbt: preview current model (dbt show)",
+    "command": "echo \"> dbt show --select $ZED_STEM --limit 20\" >&2; dbt show -q --select \"$ZED_STEM\" --limit 20 2>&1 </dev/null | grep -v -E '^[0-9]+ rows?, showing only' | env LESS='-R -S -#10' LESSHISTFILE=- less --lesskey-content=\"$(printf 'l right-scroll\\nh left-scroll\\n! noaction\\n| noaction\\ns noaction\\nv noaction\\n')\" -Ps'h/j/k/l scroll, q quit'",
+    "reveal": "always",
+    "use_new_terminal": false,
+    "hide": "on_success",
+    "show_command": false
+  }
+]
