@@ -72,6 +72,23 @@ To use a specific binary, set its path and the `lsp` argument (and the target-di
 
 The extension sets `DBT_LSP_USE_TARGET_LSP=1` for the default PATH setup so the server writes under `target/.lsp`. When you set `binary.path`, Zed runs that binary directly, so include the `arguments` and `env` settings above to keep the same behavior.
 
+## Tasks (optional)
+
+[`examples/tasks.jsonc`](examples/tasks.jsonc) has Zed tasks for dbt projects. Copy it to
+`<project>/.zed/tasks.json` (or `~/.config/zed/tasks.json` for every project) and run `task: spawn`:
+
+- lineage of the current model (upstream and downstream models, seeds, snapshots, sources and exposures)
+- format the current file or the project (`dbt format`)
+- compile the current model and print its SQL
+- open the compiled file from `target/` in a tab (this needs the `zed` command: Zed → Install CLI)
+- preview the current model (`dbt show`) in a pager
+- run, test and build the current model
+
+They run `dbt` from your `PATH`; replace `dbt` in the file to use another binary. Model lineage, compiled
+SQL, compile, the preview and run/test/build work with dbt v1 and v2 (on v1 the preview shows at most six
+columns, and compile prints the SQL twice). Format needs dbt v2 and fails on v1. `run`, `build` and
+the preview run queries on your warehouse.
+
 ## License
 
 MIT
